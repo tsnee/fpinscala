@@ -146,7 +146,9 @@ object PolymorphicFunctions {
 
   // Exercise 2: Implement a polymorphic function to check whether
   // an `Array[A]` is sorted
+  /*** This implementation returns true iff as is sorted in descending order, probably not what the authors intended. */
   def isSorted[A](as: Array[A], gt: (A,A) => Boolean): Boolean = {
+    @annotation.tailrec
     def loop(idx: Int): Boolean =
       if (idx + 1 < as.length) {
         if (gt(as(idx), as(idx + 1))) {
