@@ -30,32 +30,94 @@ object RNG {
       (f(a), rng2)
     }
 
-  def nonNegativeInt(rng: RNG): (Int, RNG) = ???
+  def nonNegativeInt(rng0: RNG): (Int, RNG) = rng0.nextInt match {
+    case t@(n, _) if n >= 0 => t
+    case (n, rng1) if n == Int.MinValue => (0, rng1)
+    case (n, rng1) if n < 0 => (-n, rng1)
+  }
 
-  def double(rng: RNG): (Double, RNG) = ???
+  def double(rng0: RNG): (Double, RNG) = nonNegativeInt(rng0) match {
+    case (i, rng1) => (i.toDouble / (Int.MaxValue.toDouble + 1.0), rng1)
+  }
 
-  def intDouble(rng: RNG): ((Int,Double), RNG) = ???
+  def intDouble(rng0: RNG): ((Int,Double), RNG) = {
+    val (i, rng1) = rng0.nextInt
+    val (d, rng2) = double(rng1)
+    ((i, d), rng2)
+  }
 
-  def doubleInt(rng: RNG): ((Double,Int), RNG) = ???
+  def doubleInt(rng0: RNG): ((Double,Int), RNG) = {
+    val (d, rng1) = double(rng0)
+    val (i, rng2) = rng1.nextInt
+    ((d, i), rng2)
+  }
 
-  def double3(rng: RNG): ((Double,Double,Double), RNG) = ???
+  def double3(rng0: RNG): ((Double,Double,Double), RNG) = {
+    val (d0, rng1) = double(rng0)
+    val (d1, rng2) = double(rng1)
+    val (d2, rng3) = double(rng2)
+    ((d0, d1, d2), rng3)
+  }
 
-  def ints(count: Int)(rng: RNG): (List[Int], RNG) = ???
+  def ints(count: Int)(rng0: RNG): (List[Int], RNG) = {
+    @annotation.tailrec
+    def loop(size: Int, r0: RNG, l: List[Int]): (List[Int], RNG) =
+      if (size < 1) {
+        (l, r0)
+      } else {
+        val (i, r1) = r0.nextInt
+        loop(size - 1, r1, i :: l)
+      }
+    loop(count, rng0, Nil)
+  }
 
-  def map2[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] = ???
+  def double2: Rand[Double] = map(nonNegativeInt)(_.toDouble / (Int.MaxValue.toDouble + 1.0))
 
-  def sequence[A](fs: List[Rand[A]]): Rand[List[A]] = ???
+  def map2[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] = { rng0 =>
+    val (a, rng1) = ra(rng0)
+    val (b, rng2) = rb(rng1)
+    (f(a, b), rng2)
+  }
 
-  def flatMap[A,B](f: Rand[A])(g: A => Rand[B]): Rand[B] = ???
+  def sequence[A](fs: List[Rand[A]]): Rand[List[A]] = { rng0 =>
+    fs.foldRight((List.empty[A], rng0)) {
+      case (f, (l, r0)) =>
+        val (a, r1) = f(r0)
+        (a :: l, r1)
+    }
+  }
+
+  def ints2(count: Int): Rand[List[Int]] = sequence(List.fill(count)(_.nextInt))
+
+  def flatMap[A,B](f: Rand[A])(g: A => Rand[B]): Rand[B] = { rng0 =>
+    val (a, rng1) = f(rng0)
+    g(a)(rng1)
+  }
+
+  def nonNegativeLessThan(n: Int): Rand[Int] = flatMap(nonNegativeInt) { i =>
+    val mod = i % n
+    if (i + (n-1) - mod >= 0) unit(mod)
+    else nonNegativeLessThan(n)
+  }
+
+  def mapViaFlatMap[A,B](s: Rand[A])(f: A => B): Rand[B] = flatMap(s)(a => unit(f(a)))
+
+  def map2ViaFlatMap[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] = flatMap(ra) { a =>
+    map(rb) { b =>
+      f(a, b)
+    }
+  }
 }
 
 case class State[S,+A](run: S => (A, S)) {
-  def map[B](f: A => B): State[S, B] =
-    ???
+  import State.unit
+  def flatMap[B](f: A => State[S, B]): State[S, B] = State { s0 =>
+    val (a, s1) = run(s0)
+    f(a).run(s1)
+  }
+  def map[B](f: A => B): State[S, B] = flatMap(a => unit(f(a)))
   def map2[B,C](sb: State[S, B])(f: (A, B) => C): State[S, C] =
-    ???
-  def flatMap[B](f: A => State[S, B]): State[S, B] =
-    ???
+    flatMap(a => sb.map(b => f(a, b)))
 }
 
 sealed trait Input
@@ -66,5 +128,17 @@ case class Machine(locked: Boolean, candies: Int, coins: Int)
 
 object State {
   type Rand[A] = State[RNG, A]
-  def simulateMachine(inputs: List[Input]): State[Machine, (Int, Int)] = ???
+  def unit[S,A](a: A): State[S,A] = State(s => (a, s))
+  def sequence[S,A](fs: List[State[S,A]]): State[S,List[A]] =
+    fs.foldRight(unit(Nil): State[S,List[A]])((s, acc) => s.map2(acc)(_ :: _))
+  def simulateMachine(inputs: List[Input]): State[Machine, (Int, Int)] = State { machine =>
+    val simulation = inputs.foldLeft(machine) {
+      case (m, Coin) if m.locked && m.candies > 0 => m.copy(locked = false, coins = m.coins + 1)
+      case (m, Turn) if !m.locked => m.copy(locked = true, candies = m.candies - 1)
+      case (m, Turn) if m.locked => m
+      case (m, Coin) if !m.locked => m
+      case (m, _) if (m.candies == 0) => m
+    }
+    ((simulation.coins, simulation.candies), simulation)
+  }
 }
