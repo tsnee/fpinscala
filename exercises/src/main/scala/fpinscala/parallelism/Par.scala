@@ -44,7 +44,19 @@ object Par {
       map2(parA, acc)(_ :: _)
     }
 
-  def parFilter[A](as: List[A])(f: A => Boolean): Par[List[A]] = ???
+  def parFilter[A](as: List[A])(f: A => Boolean): Par[List[A]] = {
+    def loop(xs: IndexedSeq[A]): Par[IndexedSeq[A]] =
+      if (xs.isEmpty) unit(IndexedSeq.empty[A])
+      else if (xs.length == 1)
+        lazyUnit(if (f(xs.head)) IndexedSeq(xs.head) else IndexedSeq.empty)
+      else {
+        val (l, r) = xs.splitAt(xs.length / 2)
+        val parL = fork(loop(l))
+        val parR = fork(loop(r))
+        map2(parL, parR)(_ ++ _)
+      }
+    map(loop(as.toIndexedSeq))(_.toList)
+  }
 
   def sortPar(parList: Par[List[Int]]) = map(parList)(_.sorted)
 
