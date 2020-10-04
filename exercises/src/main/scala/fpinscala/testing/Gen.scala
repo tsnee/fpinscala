@@ -23,24 +23,50 @@ trait Prop3 {
   }
 }
 
-case class Prop9(run: (TestCases,RNG) => Result) {
-  def check: Boolean
-  def &&(p: => Prop9): Prop9 = new Prop9 {
-  }
-  def ||(p: => Prop9): Prop9 = new Prop9 {
-  }
+sealed trait Result {
+  def isFalsified: Boolean
 }
-object Prop9 {
-  def forAll[A](gen: Gen[A])(f: A => Boolean): Prop = ???
+case object Passed extends Result {
+  def isFalsified = false
 }
-
-object Gen {
-  def unit[A](a: => A): Gen[A] = ???
+case class Falsified(failure: FailedCase, successes: SuccessCount) extends Result {
+  def isFalsified = true
 }
 
-trait Gen[A] {
-  def map[A,B](f: A => B): Gen[B] = ???
-  def flatMap[A,B](f: A => Gen[B]): Gen[B] = ???
+case class Prop(run: (TestCases,RNG) => Result) {
+  def &&(p: => Prop): Prop = Prop { (testCases,rng) =>
+    run(testCases, rng) match {
+      case Passed => p.run(testCases, rng)
+      case f => f
+    }
+  }
+  def ||(p: => Prop): Prop = Prop { (testCases,rng) =>
+    run(testCases, rng) match {
+      case Passed => Passed
+      case Falsified(_, _) => p.run(testCases, rng)
+    }
+  }
+}
+object Prop {
+  type TestCases = Int
+  type SuccessCount = Int
+  type FailedCase = String
+
+  def forAll[A](as: Gen[A])(f: A => Boolean): Prop = Prop {
+    (n,rng) => randomStream(as)(rng).zipWith(Stream.from(0))((_, _)).take(n).map {
+      case (a, i) => try {
+        if (f(a)) Passed else Falsified(a.toString, i)
+      } catch { case e: Exception => Falsified(buildMsg(a, e), i) }
+    }.find(_.isFalsified).getOrElse(Passed)
+  }
+
+  def randomStream[A](g: Gen[A])(rng: RNG): Stream[A] = Stream.unfold(rng)(rng => Some(g.sample.run(rng)))
+
+  def buildMsg[A](s: A, e: Exception): String =
+    s"""test case: $s
+generated an exception: ${e.getMessage}
+stack trace:
+${e.getStackTrace.mkString("\n")}"""
 }
 
 case class Gen4[A](sample: State[RNG,A])
@@ -90,24 +116,45 @@ object Gen7 {
     boolean.flatMap(if (_) g1 else g2)
 }
 
-case class Gen8[A](sample: State[RNG,A]) {
-  def flatMap[B](f: A => Gen8[B]): Gen8[B] =
-    Gen8(sample.flatMap(a => f(a).sample))
-  def listOfN[A](n: Int, g: Gen8[A]): Gen8[List[A]] =
-    Gen8(State.sequence(List.fill(n)(g.sample)))
+// Answer to #8
+case class Gen[+A](sample: State[RNG,A]) {
+  def flatMap[B](f: A => Gen[B]): Gen[B] =
+    Gen(sample.flatMap(a => f(a).sample))
+  def unsized: SGen[A] = SGen(_ => this)
+  def listOf(n: Int): Gen[List[A]] =
+    Gen(State.sequence(List.fill(n)(sample)))
+  def listOf1(n: Int): Gen[List[A]] = {
+    require(n > 0)
+    Gen(State.sequence(List.fill(n)(sample)))
+  }
 }
-object Gen8 {
-  def unit[A](a: => A): Gen8[A] = Gen8(State.unit(a))
-  def boolean: Gen8[Boolean] =
-    Gen8(State(RNG.map(RNG.int)(_ % 2 == 0)))
-  def union[A](g1: Gen8[A], g2: Gen8[A]): Gen8[A] =
+object Gen {
+  def choose(start: Int, stopExclusive: Int): Gen[Int] =
+    Gen(State(RNG.nonNegativeLessThan(stopExclusive - start)).map(_ + start))
+  def unit[A](a: => A): Gen[A] = Gen(State.unit(a))
+  def boolean: Gen[Boolean] =
+    Gen(State(RNG.map(RNG.int)(_ % 2 == 0)))
+  def listOfN[A](n: Int, g: Gen[A]): Gen[List[A]] =
+    Gen(State.sequence(List.fill(n)(g.sample)))
+  def union[A](g1: Gen[A], g2: Gen[A]): Gen[A] =
     boolean.flatMap(if (_) g1 else g2)
-  def weighted[A](g1: (Gen8[A],Double), g2: (Gen8[A],Double)): Gen8[A] =
-    Gen8(State(RNG.map(RNG.double2)(_ < g1._2 / (g1._2 + g2._2)))).flatMap { b =>
+  def weighted[A](g1: (Gen[A],Double), g2: (Gen[A],Double)): Gen[A] =
+    Gen(State(RNG.map(RNG.double2)(_ < g1._2 / (g1._2 + g2._2)))).flatMap { b =>
       if (b) g1._1 else g2._1
     }
 }
 
-trait SGen[+A] {
+case class SGen[+A](forSize: Int => Gen[A])
+object SGen {
+  def unit[A](a: => A): SGen[A] = Gen.unit(a).unsized
+  def listOf[A](g: Gen[A]): SGen[List[A]] = SGen(n => Gen.listOfN(n, g))
+}
 
+object _14 {
+  //def forAll[A](as: Gen[A])(f: A => Boolean): Prop = Prop {
+  val sortedProp = Prop.forAll(Gen.choose(-10, 10).listOf(10)) { l =>
+    val sorted = l.sorted
+    sorted.head == sorted.min
+    sorted.last == sorted.max
+  }
 }
