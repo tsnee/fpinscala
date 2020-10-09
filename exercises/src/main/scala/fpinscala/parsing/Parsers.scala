@@ -150,26 +150,87 @@ case class Location(input: String, offset: Int = 0) {
 case class ParseError(stack: List[(Location,String)] = List(),
                       otherFailures: List[ParseError] = List())
 
-class MyParser[+A] {
+trait MyParser[+A] {
+  def issueLevel: IssueLevel = IssueLevel.Warning
+  def scopes: List[String] = Nil
+  def setIssueLevel(issueLevel: IssueLevel): MyParser[A] =
+    ParserDecorator(underlying = this, issueLevel = issueLevel)
+  def setLabel(label: String): MyParser[A] =
+    ParserDecorator(underlying = this, label = label)
+  def pushScope(scope: String): MyParser[A] =
+    ParserDecorator(underlying = this, scopes = scope :: scopes)
+  def popScope(scope: String): MyParser[A] =
+    ParserDecorator(underlying = this, scopes = scopes.tail)
+  def parse(location: Location): (Either[ParseError,A], Location)
 }
+case class ParserDecorator[A](
+  underlying: MyParser[A],
+  override val issueLevel: IssueLevel = IssueLevel.Warning,
+  label: String = "",
+  override val scopes: List[String] = Nil
+) extends MyParser[A] {
+  override def parse(location: Location): (Either[ParseError,A], Location) =
+    underlying.parse(location)
+}
+case class StringParser(s: String) extends MyParser[String] {
+  override def parse(location: Location): (Either[ParseError,String], Location) =
+    if (location.currentLine.drop(location.col).startsWith(s))
+      (Right(s), location.advanceBy(s.length))
+    else
+      (Left(location.toError(s"Input did not match $s.")), location)
+}
+case class OrParser[A](p1: MyParser[A], p2: () => MyParser[A]) extends MyParser[A] {
+  override def parse(location: Location): (Either[ParseError,A], Location) =
+    p1.parse(location) match {
+      case x@(Right(_), _) => x
+      case (Left(err1), _) => p2().parse(location) match {
+        case y@(Right(_), _) => y
+        case (Left(err2), _) =>
+          val msg = s"""Tried two alternatives:
+first result: $err1
+second result: $err2"""
+          (Left(location.toError(msg)), location)
+      }
+    }
+}
+case class ConsumedInput(p: MyParser[_]) extends MyParser[String] {
+  override def parse(location: Location): (Either[ParseError,String], Location) =
+    p.parse(location) match {
+      case (Right(_), newLoc) =>
+        val output = location
+          .input
+          .drop(location.offset)
+          .take(newLoc.offset - location.offset)
+        (Right(output), location)
+      case (Left(err), _) => (Right(s"Error parsing input: $err."), location)
+    }
+}
+
 object MyParsers extends Parsers[MyParser] {
   override def attempt[A](p: MyParser[A]): MyParser[A] = ???
 
   override def flatMap[A, B](p: MyParser[A])(f: A => MyParser[B]): MyParser[B] = ???
 
-  override def label[A](m: String)(p: MyParser[A]): MyParser[A] = ???
+  override def label[A](m: String)(p: MyParser[A]): MyParser[A] =
+    p.setLabel(m)
 
-  override def or[A](s1: MyParser[A],s2: => MyParser[A]): MyParser[A] = ???
+  override def or[A](s1: MyParser[A],s2: => MyParser[A]): MyParser[A] =
+    OrParser(s1, () => s2)
 
   override implicit def regex(r: scala.util.matching.Regex): MyParser[String] = ???
 
-  override def run[A](p: MyParser[A])(input: String): Either[ParseError,A] = ???
+  override def run[A](p: MyParser[A])(input: String): Either[ParseError,A] =
+    p.parse(Location(input, 0))._1
 
-  override def scope[A](m: String)(p: MyParser[A]): MyParser[A] = ???
+  override def scope[A](m: String)(p: MyParser[A]): MyParser[A] =
+    p.pushScope(m)
 
-  override def setIssueLevel[A](a: MyParser[A],e: IssueLevel): MyParser[A] = ???
+  override def setIssueLevel[A](a: MyParser[A],e: IssueLevel): MyParser[A] =
+    a.setIssueLevel(e)
 
-  override def slice[A](p: MyParser[A]): MyParser[String] = ???
+  override def slice[A](p: MyParser[A]): MyParser[String] =
+    ConsumedInput(p)
 
-  override implicit def string(s: String): MyParser[String] = ???
+  override implicit def string(s: String): MyParser[String] =
+    StringParser(s)
 }
