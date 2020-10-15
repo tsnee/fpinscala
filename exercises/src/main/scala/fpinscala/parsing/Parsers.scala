@@ -104,10 +104,13 @@ object JSON {
     } yield k.get -> v
     def jObject: Parser[JSON] = for {
       _ <- char('{')
-      keyValuePairs <- product(keyValuePair, product(char(','), keyValuePair).map(_._2).many).map { case (hd, tl) => (hd :: tl) }
+      keyValuePairs <- product(
+        keyValuePair,
+        product(char(','), keyValuePair).map(_._2).many
+      ).map { case (hd, tl) => hd :: tl }
       _ <- char('}')
     } yield JObject(keyValuePairs.toMap)
-    def json: Parser[JSON] = jNull | jNumber | jString | jBool | jArray | jObject
+    def json: Parser[JSON] = attempt(jNull) | attempt(jNumber) | attempt(jString) | attempt(jBool) | attempt(jArray) | attempt(jObject)
     jObject
   }
 }
@@ -420,7 +423,7 @@ object Exercise_15 {
     }
 
     implicit override def regex(r: Regex): Parser[String] = { location =>
-      r.findPrefixOf(location.currentLine.drop(location.col)) match {
+      r.findPrefixOf(location.input.drop(location.offset)) match {
         case Some(s) => Success(s, s.length)
         case None => Failure(location.toError(s"Input did not match $r."), true)
       }
