@@ -109,8 +109,12 @@ object Monoid {
     )
 
   sealed trait WC
-  case class Stub(chars: String) extends WC
-  case class Part(lStub: String, words: Int, rStub: String) extends WC
+  case class Stub(chars: String) extends WC {
+    require (chars.forall(_.isLetterOrDigit))
+  }
+  case class Part(lStub: String, words: Int, rStub: String) extends WC {
+    require (lStub.forall(_.isLetterOrDigit) && rStub.forall(_.isLetterOrDigit))
+  }
 
   def par[A](m: Monoid[A]): Monoid[Par[A]] = 
     ???
@@ -125,24 +129,17 @@ object Monoid {
         Console.err.println(s"Stub('$s1' + '$s2')")
         Stub(s1 + s2)
       case (Part(lstub, words, rstub), Stub(s2)) =>
-        Console.err.println(s"op(Part(...), Stub('$rstub' + '$s2'))")
-        op(Part(lstub, words, ""), Stub(rstub + s2))
+        Console.err.println(s"Part('$lstub', $words, '$rstub' + '$s2')")
+        Part(lstub, words, rstub + s2)
       case (Stub(s1), Part(lstub, words, rstub)) =>
-        Console.err.println(s"op(Stub('$s1' + '$lstub'), Part(...))")
-        op(Stub(s1 + lstub), Part("", words, rstub))
+        Console.err.println(s"Part('$s1' + '$lstub', $words, '$rstub')")
+        Part(s1 + lstub, words, rstub)
       case (Part(lstub1, words1, rstub1), Part(lstub2, words2, rstub2)) =>
         val sum = if (rstub1.isEmpty && lstub2.isEmpty) words1 + words2
                   else 1 + words1 + words2
         Console.err.println(s"Part('$lstub1', $sum, '$rstub2')")
         Part(lstub1, sum, rstub2)
     }
-  }
-
-  def analyze(s: String): WC = {
-    val wordBuf = tokenize(s)
-    if (wordBuf.isEmpty) Stub("")
-    else if (wordBuf.length == 1) Stub(s)
-    else Part(wordBuf.head, wordBuf.length - 2, wordBuf.last)
   }
 
   def tokenize(s: String): List[String] =
@@ -160,80 +157,106 @@ object Monoid {
       }
     }
 
-  def divide(substr: String): WC =
-    if (substr.length < 2) {
-      Console.err.println(s"analyze($substr)")
-      analyze(substr)
+  def divideAndConquer(s: String): WC = {
+    val threshold = 4   // must be at least 2 for this code to work
+    if (s.length <= threshold) {
+      val tokens = tokenize(s)
+      if (tokens.isEmpty) wcMonoid.zero
+      else if (tokens.length == 1) Stub(tokens.head)
+      else Part(tokens.head, tokens.length - 2, tokens.last)
     }
     else {
-      val (s1, s2) = substr.splitAt(substr.length / 2)
-      Console.err.println(s"op(divide($s1), divide($s2))")
-      wcMonoid.op(divide(s1), divide(s2))
+      val (s1, s2) = s.splitAt(s.length / 2)
+      wcMonoid.op(divideAndConquer(s1), divideAndConquer(s2))
     }
+  }
 
-  def count(s: String): Int =
-    divide(s) match {
-      case Stub(s) => if (s.forall(!_.isLetterOrDigit)) 0 else 1
-      case Part(l, n, r) if l.isEmpty && r.isEmpty => n
-      case Part(l, n, r) if l.isEmpty || r.isEmpty => n + 1
-      case Part(_, n, _) => n + 2
-    }
+  def count(s: String): Int = divideAndConquer(s) match {
+    case Stub(stub) if stub.isEmpty => 0
+    case Stub(stub) => 1
+    case Part(lstub, wordCount, rstub) =>
+      if (lstub.isEmpty && rstub.isEmpty) wordCount
+      else if (lstub.isEmpty || rstub.isEmpty) wordCount + 1
+      else wordCount + 2
+  }
 
   def productMonoid[A,B](A: Monoid[A], B: Monoid[B]): Monoid[(A, B)] =
-    ???
+    new Monoid[(A, B)] {
+      override val zero = (A.zero, B.zero)
+      override def op(pair0: (A, B), pair1: (A, B)): (A, B) =
+        (A.op(pair0._1, pair1._1), B.op(pair0._2, pair1._2))
+    }
 
   def functionMonoid[A,B](B: Monoid[B]): Monoid[A => B] =
-    ???
+    new Monoid[A => B] {
+      override val zero: A => B = _ => B.zero
+      override def op(x: A => B, y: A => B): A => B = { a =>
+        B.op(x(a), y(a))
+      }
+    }
 
   def mapMergeMonoid[K,V](V: Monoid[V]): Monoid[Map[K, V]] =
-    ???
+    new Monoid[Map[K, V]] {
+      def zero = Map[K,V]()
+      def op(a: Map[K, V], b: Map[K, V]) =
+        (a.keySet ++ b.keySet).foldLeft(zero) { (acc,k) =>
+          acc.updated(k, V.op(a.getOrElse(k, V.zero),
+                              b.getOrElse(k, V.zero)))
+        }
+    }
 
   def bag[A](as: IndexedSeq[A]): Map[A, Int] =
-    ???
+    as.map(a => Map(a -> 1)).reduce(mapMergeMonoid[A, Int](intAddition).op)
 }
 
 trait Foldable[F[_]] {
   import Monoid._
 
   def foldRight[A, B](as: F[A])(z: B)(f: (A, B) => B): B =
-    ???
-
+    foldLeft(as)(z)((b, a) => f(a, b))
   def foldLeft[A, B](as: F[A])(z: B)(f: (B, A) => B): B =
-    ???
-
+    foldRight(as)(z)((a, b) => f(b, a))
   def foldMap[A, B](as: F[A])(f: A => B)(mb: Monoid[B]): B =
-    ???
-
+    foldLeft(as)(mb.zero)((b, a) => mb.op(b, f(a)))
   def concatenate[A](as: F[A])(m: Monoid[A]): A =
-    ???
-
+    foldMap(as)(identity)(m)
   def toList[A](as: F[A]): List[A] =
-    ???
+    foldRight(as)(List.empty[A])(_ :: _)
 }
 
 object ListFoldable extends Foldable[List] {
   override def foldRight[A, B](as: List[A])(z: B)(f: (A, B) => B) =
-    ???
+    as match {
+      case h :: t => f(h, foldRight(t)(z)(f))
+      case Nil => z
+    }
+  @annotation.tailrec
   override def foldLeft[A, B](as: List[A])(z: B)(f: (B, A) => B) =
-    ???
+    as match {
+      case h :: t => foldLeft(t)(f(z, h))(f)
+      case Nil => z
+    }
   override def foldMap[A, B](as: List[A])(f: A => B)(mb: Monoid[B]): B =
-    ???
+    foldLeft(as)(mb.zero)((b, a) => mb.op(b, f(a)))
 }
 
 object IndexedSeqFoldable extends Foldable[IndexedSeq] {
   override def foldRight[A, B](as: IndexedSeq[A])(z: B)(f: (A, B) => B) =
-    ???
+    foldMap(as.map(a => (b: B) => f(a, b)))(identity)(Monoid.endoMonoid)(z)
+  @annotation.tailrec
   override def foldLeft[A, B](as: IndexedSeq[A])(z: B)(f: (B, A) => B) =
-    ???
+    if (as.isEmpty) z
+    else foldLeft(as.tail)(f(z, as.head))(f)
   override def foldMap[A, B](as: IndexedSeq[A])(f: A => B)(mb: Monoid[B]): B =
-    ???
+    foldLeft(as)(mb.zero)((b, a) => mb.op(b, f(a)))
 }
 
 object StreamFoldable extends Foldable[Stream] {
   override def foldRight[A, B](as: Stream[A])(z: B)(f: (A, B) => B) =
-    ???
+    foldLeft(as.reverse)(z)((b, a) => f(a, b))
   override def foldLeft[A, B](as: Stream[A])(z: B)(f: (B, A) => B) =
-    ???
+    if (as.isEmpty) z
+    else foldLeft(as.tail)(f(z, as.head))(f)
 }
 
 sealed trait Tree[+A]
@@ -242,19 +265,25 @@ case class Branch[A](left: Tree[A], right: Tree[A]) extends Tree[A]
 
 object TreeFoldable extends Foldable[Tree] {
   override def foldMap[A, B](as: Tree[A])(f: A => B)(mb: Monoid[B]): B =
-    ???
+    as match {
+      case Leaf(a) => f(a)
+      case Branch(l, r) => mb.op(foldMap(l)(f)(mb), foldMap(r)(f)(mb))
+    }
   override def foldLeft[A, B](as: Tree[A])(z: B)(f: (B, A) => B) =
-    ???
+    as match {
+      case Leaf(a) => f(z, a)
+      case Branch(l, r) => foldLeft(r)(foldLeft(l)(z)(f))(f)
+    }
   override def foldRight[A, B](as: Tree[A])(z: B)(f: (A, B) => B) =
-    ???
+    foldMap(as)(f.curried)(Monoid.endoMonoid)(z)
 }
 
 object OptionFoldable extends Foldable[Option] {
+  import Monoid._
   override def foldMap[A, B](as: Option[A])(f: A => B)(mb: Monoid[B]): B =
-    ???
+    as.map(f).getOrElse(mb.zero)
   override def foldLeft[A, B](as: Option[A])(z: B)(f: (B, A) => B) =
-    ???
+    foldMap(as)(a => (b: B) => f(b, a))(endoMonoid)(z)
   override def foldRight[A, B](as: Option[A])(z: B)(f: (A, B) => B) =
-    ???
+    foldMap(as)(f.curried)(endoMonoid)(z)
 }
-
