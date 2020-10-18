@@ -12,12 +12,8 @@ import language.implicitConversions
 trait Applicative[F[_]] extends Functor[F] {
 
   def map2[A,B,C](fa: F[A], fb: F[B])(f: (A, B) => C): F[C] = {
-    type applyA = A => B
-    type applyB = C
-    val g: (A => B) => C = (a: A) => (h: A => B) => f(a, h(a))
-    val applyFab: F[applyA => applyB] = unit(g)
-    val applyFa: F[applyA] = ???
-    apply(applyFab)(applyFa)
+    val g: F[A => (B => C)] = unit(a => f(a, _))
+    apply(apply(g)(fa))(fb)
   }
 
   def apply[A,B](fab: F[A => B])(fa: F[A]): F[B] = map2(fab, fa)(_(_))
@@ -40,6 +36,18 @@ trait Applicative[F[_]] extends Functor[F] {
   def replicateM[A](n: Int, fa: F[A]): F[List[A]] = map2(unit(n), fa)(List.fill(_)(_))
 
   def factor[A,B](fa: F[A], fb: F[B]): F[(A,B)] = map2(fa, fb)(_ -> _)
+
+  def map3[A,B,C,D](
+    fa: F[A], fb: F[B], fc: F[C]
+  )(
+    f: (A, B, C) => D
+  ): F[D] = apply(apply(apply(unit(f.curried))(fa))(fb))(fc)
+
+  def map4[A,B,C,D,E](
+    fa: F[A], fb: F[B], fc: F[C], fd: F[D]
+  )(
+    f: (A, B, C, D) => E
+  ): F[E] = apply(apply(apply(apply(unit(f.curried))(fa))(fb))(fc))(fd)
 
   def product[G[_]](G: Applicative[G]): Applicative[({type f[x] = (F[x], G[x])})#f] = ???
 
